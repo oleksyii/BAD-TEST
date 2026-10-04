@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>Bueno</title>
+<style>
+  @font-face { font-family: 'Rubik'; src: url('../assets/Rubik.ttf') format('truetype'); font-weight: 300 900; }
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  #stage { position: relative; width: 1080px; height: 1920px; }
+  #stage canvas { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "../node_modules/three/build/three.module.js",
+    "three/addons/": "../node_modules/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" width="1080" height="1920"></canvas>
+  <canvas id="ov" width="1080" height="1920"></canvas>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

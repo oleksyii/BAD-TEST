@@ -1,0 +1,5 @@
+node_modules/
+out/
+# personal photo, product image and downloaded font stay local (public repo)
+assets/*
+!assets/README.md
