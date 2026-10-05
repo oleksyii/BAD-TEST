@@ -151,6 +151,21 @@ def tear_boom():
     return norm(np.tanh(1.6 * norm(out)), db(-0.8))
 
 
+step_rng = np.random.default_rng(905)  # own generator, so the other sounds keep their random draws
+
+
+def footstep(size):
+    """Small sneaker on hard tiles: heel knock, then the sole slaps down. size: step length vs a full stride."""
+    n = int(0.25 * SR)
+    tt = tsec(n)
+    heel = (np.sin(2 * np.pi * step_rng.uniform(140, 175) * tt) * decay(n, 0.02)
+            + 0.9 * bp(step_rng.standard_normal(n), 300, 3000) * decay(n, 0.005))
+    slap = np.zeros(n)
+    j = int(step_rng.uniform(0.04, 0.055) * SR)
+    slap[j:] = bp(step_rng.standard_normal(n - j), 900, 6000) * decay(n - j, 0.004) * (0.25 + 0.5 * size)
+    return norm(heel + slap) * (0.45 + 0.55 * size)
+
+
 def knee_thud():
     n = int(0.3 * SR)
     tt = tsec(n)
@@ -309,6 +324,17 @@ for tick in (0.37, 0.43, 0.47, 0.54):
     add(switch_click() * 0.3, E['lightOn'] + tick - 0.30, db(-24), -0.1)
 add(lamp_hum(), E['lightOn'], db(-20))
 add(room_tone() * np.array([light_level(E['lightOn'] + x / SR) for x in range(0, idx(E['blackout']) - idx(E['lightOn']))]), E['lightOn'], db(-62))
+
+# footsteps: faint in the dark, full level once the walker is in the light, panned along with the walker
+FOOT = np.zeros((2, N))
+for s in E['steps']:
+    near = np.clip((s['x'] + 4.4) / 1.9, 0, 1)
+    add(footstep(s['size']), s['t'], db(-28 + 10 * near), float(np.clip(s['x'] / 5, -0.8, 0.8)), FOOT)
+irn = int(0.8 * SR)
+ir = lp(step_rng.standard_normal(irn), 3500) * decay(irn, 0.16)
+ir /= np.sqrt(np.sum(ir ** 2))
+for c in range(2):
+    MAIN[c] += FOOT[c] + 0.3 * fftconvolve(FOOT[c], ir)[:N]
 
 add(crinkle(0.3, 500), E['grab'], db(-24), -0.2)
 add(crinkle(0.25, 400), E['turn'], db(-28), -0.2)

@@ -11,8 +11,10 @@ const X_AXIS = V3(1, 0, 0);
 // ------------------------------------------------------------------ timeline (seconds)
 const T = {
   lightOn: 0.30,
+  closeIn: 2.0, closeOut: 5.0, // close-up of the Bueno waiting on the plate
   flicker: 3.6,
-  glideStart: 6.2, glideEnd: 8.9,
+  stepsHeard: 4.3, // footsteps start in the dark, before the walker is in frame
+  walkEnd: 9.0, // the walker comes to rest at the cart
   lookDown: 9.3,
   headToCam: 12.8, headBack: 14.8,
   reach: 18.0, grab: 18.55, turn: 19.0,
@@ -64,16 +66,19 @@ scene.background = new THREE.Color(0x000000);
 
 const CAM = { target: V3(0.05, 0.3, -0.25), el: 30, yaw: 5, dist: 14.0, fov: 44 };
 const camera = new THREE.PerspectiveCamera(CAM.fov, W / H, 0.1, 60);
+function orbit(cam, target, el, yaw, dist) { // angles in degrees
+  el *= DEG; yaw *= DEG;
+  cam.position.set(
+    target.x + dist * Math.sin(yaw) * Math.cos(el),
+    target.y + dist * Math.sin(el),
+    target.z + dist * Math.cos(yaw) * Math.cos(el));
+  cam.lookAt(target);
+  cam.updateProjectionMatrix();
+  cam.updateMatrixWorld(true);
+}
 function placeCamera() {
-  const el = CAM.el * DEG, yw = CAM.yaw * DEG;
   camera.fov = CAM.fov;
-  camera.position.set(
-    CAM.target.x + CAM.dist * Math.sin(yw) * Math.cos(el),
-    CAM.target.y + CAM.dist * Math.sin(el),
-    CAM.target.z + CAM.dist * Math.cos(yw) * Math.cos(el));
-  camera.lookAt(CAM.target);
-  camera.updateProjectionMatrix();
-  camera.updateMatrixWorld(true);
+  orbit(camera, CAM.target, CAM.el, CAM.yaw, CAM.dist);
 }
 placeCamera();
 window.CAM = CAM; window.placeCamera = placeCamera;
@@ -201,6 +206,7 @@ const M = {
   rubber: new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 }),
   plate: new THREE.MeshStandardMaterial({ color: 0xf6f6f3, roughness: 0.22, metalness: 0, flatShading: true }),
   wrap: new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.05, alphaTest: 0.5, side: THREE.DoubleSide }),
+  wrapBody: new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.05, envMap: envTex, envMapIntensity: 0.3 }),
   packBody: new THREE.MeshStandardMaterial({ color: 0xf3f1ee, roughness: 0.35 }),
   stick: new THREE.MeshStandardMaterial({ map: stickTex, roughness: 0.42, emissive: 0xffffff, emissiveMap: stickTex, emissiveIntensity: 0 }),
   skin: new THREE.MeshStandardMaterial({ color: 0xe3a68d, roughness: 0.6, emissive: 0xe3a68d, emissiveIntensity: 0 }),
@@ -273,17 +279,63 @@ plate.rotation.y = 7 * DEG;
 scene.add(plate);
 
 // ------------------------------------------------------------------ Kinder Bueno pack (two halves) + two sticks
-const PACK_L = 0.30, PACK_W = PACK_L * 316 / 882, PACK_T = 0.026;
+const PACK_L = 0.30, PACK_W = PACK_L * 316 / 882, PACK_T = 0.026, CRIMP = 0.012;
+const PACK_ZF = 0.487 * PACK_W, PACK_ZB = -0.399 * PACK_W; // front/back edge of the pack in the wrapper photo
+const packUV = (x, z) => [(x + PACK_L / 2) / PACK_L, 0.5 - z / PACK_W]; // photo projected from above, pack space
+function makePackBody(side) { // pillow sleeve with round long edges that flattens into the crimp; white caps
+  const S = [0, 0.5, 0.75, 0.86, 0.92, 0.96, 0.985, 1], NA = 10, len = PACK_L / 2 - CRIMP;
+  const pos = [], uv = [], idx = [];
+  let n = 0;
+  for (const s of S) {
+    const x = side * lerp(-0.0015, len, s), h = (PACK_T / 2) * (1 - 0.85 * smoothstep(0.8, 1, s)); // halves overlap a hair at the seam
+    const ring = [];
+    for (let i = 0; i <= NA; i++) { const a = Math.PI * (i / NA - 0.5); ring.push([PACK_ZF - h + h * Math.cos(a), h * Math.sin(a)]); }
+    for (let i = 0; i <= NA; i++) { const a = Math.PI * (i / NA + 0.5); ring.push([PACK_ZB + h + h * Math.cos(a), h * Math.sin(a)]); }
+    n = ring.length;
+    for (const [z, y] of ring) {
+      const [u, v] = packUV(x, z);
+      pos.push(x - side * PACK_L / 4, y, z); uv.push(clamp(u, 0.04, 0.96), clamp(v, 0.02, 0.89));
+    }
+  }
+  for (let k = 0; k + 1 < S.length; k++) for (let i = 0; i < n; i++) {
+    const a = k * n + i, b = k * n + (i + 1) % n, c = a + n, d = b + n;
+    if (side > 0) idx.push(a, c, b, b, c, d); else idx.push(a, b, c, b, d, c);
+  }
+  const sideCount = idx.length;
+  for (const [k, plusX] of [[0, side < 0], [S.length - 1, side > 0]]) { // torn end at the seam, crimp end
+    const c0 = pos.length / 3;
+    let cy = 0, cz = 0;
+    for (let i = 0; i < n; i++) {
+      const j = (k * n + i) * 3;
+      pos.push(pos[j], pos[j + 1], pos[j + 2]); uv.push(0, 0);
+      cy += pos[j + 1] / n; cz += pos[j + 2] / n;
+    }
+    pos.push(pos[k * n * 3], cy, cz); uv.push(0, 0);
+    for (let i = 0; i < n; i++) {
+      const p = c0 + i, q = c0 + (i + 1) % n;
+      if (plusX) idx.push(c0 + n, q, p); else idx.push(c0 + n, p, q);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.addGroup(0, sideCount, 0); geo.addGroup(sideCount, idx.length - sideCount, 1);
+  geo.computeVertexNormals();
+  return mesh(geo, [M.wrapBody, M.packBody]);
+}
+function makeCrimp(side) { // flat sealed end of the wrapper (zig-zag edge comes from the photo's alpha)
+  const w = CRIMP + 0.003;
+  const geo = new THREE.PlaneGeometry(w, PACK_ZF - PACK_ZB);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(side * (PACK_L / 2 - w / 2) - side * PACK_L / 4, 0, (PACK_ZF + PACK_ZB) / 2);
+  const p = geo.attributes.position, uv = geo.attributes.uv;
+  for (let i = 0; i < p.count; i++) uv.setXY(i, ...packUV(p.getX(i) + side * PACK_L / 4, p.getZ(i)));
+  return mesh(geo, M.wrap);
+}
 function makePackHalf(side) { // side -1: half nearer the right hand (u 0..0.5), +1: other half
   const g = new THREE.Group();
-  const geo = new THREE.PlaneGeometry(PACK_L / 2, PACK_W);
-  const uv = geo.attributes.uv;
-  for (let i = 0; i < uv.count; i++) uv.setX(i, side < 0 ? uv.getX(i) * 0.5 : 0.5 + uv.getX(i) * 0.5);
-  const top = mesh(geo, M.wrap); top.rotation.x = -Math.PI / 2; top.position.y = PACK_T / 2 + 0.0005;
-  const bot = mesh(geo.clone(), M.wrap); bot.rotation.x = Math.PI / 2; bot.position.y = -PACK_T / 2 - 0.0005;
-  const body = mesh(new RoundedBoxGeometry(PACK_L / 2 - 0.022, PACK_T, PACK_W * 0.8, 3, 0.011), M.packBody);
-  body.position.x = side * 0.011;
-  g.add(top, bot, body);
+  g.add(makePackBody(side), makeCrimp(side));
   g.position.x = side * PACK_L / 4;
   return g;
 }
@@ -305,6 +357,18 @@ function makeStick() {
   return { holder, mesh: m };
 }
 const stickR = makeStick(), stickL = makeStick();
+
+// ------------------------------------------------------------------ close-up of the Bueno (hard cut in and out, slow push-in)
+const CLOSE = { target: PACK_POS0.clone(), el: [33, 29], yaw: [-16, -8], dist: [1.38, 1.13], fov: 30 };
+const closeCam = new THREE.PerspectiveCamera(CLOSE.fov, W / H, 0.05, 30);
+function shotCamera(t) {
+  const close = t >= T.closeIn && t < T.closeOut;
+  spot.shadow.focus = close ? 0.35 : 1; // the close-up only needs shadows around the cart, at higher resolution
+  if (!close) return camera;
+  const k = prog(t, T.closeIn, T.closeOut);
+  orbit(closeCam, CLOSE.target, lerp(CLOSE.el[0], CLOSE.el[1], k), lerp(CLOSE.yaw[0], CLOSE.yaw[1], k), lerp(CLOSE.dist[0], CLOSE.dist[1], k));
+  return closeCam;
+}
 
 // ------------------------------------------------------------------ character
 const RX = 0.118, RY = 0.165, RZ = 0.135, FRONT_FLAT = 0.93, FACE_WIN = 0.4008;
@@ -623,6 +687,7 @@ function biteLeft(t, bites) { // remaining fraction of a stick being eaten
 }
 function setLegs(kneel) {
   const L = char.legL, R = char.legR;
+  L.hip.rotation.order = R.hip.rotation.order = 'XYZ'; // the walk switches to ZXY
   L.hip.rotation.set(-85 * DEG * kneel, 0, 4 * DEG * kneel);
   L.knee.rotation.set(85 * DEG * kneel, 0, 0);
   L.ankle.rotation.set(0, 0, 0);
@@ -631,10 +696,78 @@ function setLegs(kneel) {
   R.ankle.rotation.set(-35 * DEG * kneel, 0, 0);
 }
 
+// ------------------------------------------------------------------ walk-in: procedural gait with planted feet
+// The body cruises in from the dark and brakes to a stop at CHAR_POS (T.walkEnd). Footfall k (even: right foot, odd:
+// left) lands at fallT(k), on the spot the hip will pass over at mid-stance, so the steps shorten by themselves while
+// braking and a foot never slides. The last full step lands where the body stops; the other foot then closes up.
+const GAIT = {
+  v: 0.95, step: 0.29, duty: 0.6, brake: 0.6, // cruise speed (m/s), seconds per step, stance share, braking time
+  hip: 0.374, bob: 0.012, sway: 0.012, lift: 0.055, // mean hip height while walking, its bob, side sway, foot lift
+  heel: 14 * DEG, toe: 34 * DEG, // foot roll at heel strike and toe-off
+  arm: 0.075, lean: 4 * DEG, twist: 4 * DEG, tilt: 2 * DEG, // arm swing (m), spine lean/twist, head tilt
+};
+const THIGH = 0.19, SHIN = 0.155, ANKLE_H = 0.045, HEEL_Z = -0.05, TOE_Z = 0.11; // see makeLeg()
+const HIP_REST = 0.39, STEP = GAIT.step, MID = GAIT.duty * STEP, STRIDE = 2 * GAIT.v * STEP;
+const BRAKE0 = T.walkEnd - GAIT.brake, S0 = T.walkEnd - MID, WALK_DONE = S0 + STEP + 0.05;
+function bodyX(t) { // cruise, then brake with a smoothstep speed profile
+  const v = GAIT.v, D = GAIT.brake, x0 = CHAR_POS.x - v * D / 2;
+  if (t >= T.walkEnd) return CHAR_POS.x;
+  if (t <= BRAKE0) return x0 - v * (BRAKE0 - t);
+  const u = t - BRAKE0, k = u / D;
+  return x0 + v * (u - D * k * k * k * (1 - k / 2));
+}
+const walkSpeed = (t) => 1 - smoothstep(BRAKE0, T.walkEnd, t); // relative to cruise
+const fallT = (k) => S0 + k * STEP;
+const plantX = (k) => bodyX(fallT(k) + MID);
+function footRoll(z, pitch) { // ankle [z, y] of a foot planted at z, rolled onto its heel (pitch < 0) or toe (> 0)
+  const p = pitch > 0 ? TOE_Z : HEEL_Z;
+  return [z + p * (1 - Math.cos(pitch)) + ANKLE_H * Math.sin(pitch), ANKLE_H * Math.cos(pitch) + p * Math.sin(pitch)];
+}
+function footAt(t, parity, xb) { // parity 0: right foot, 1: left -> ankle [z, y] in character space and foot pitch
+  let k = Math.floor((t - S0) / STEP);
+  if ((k & 1) !== parity) k -= 1;
+  const s = fallT(k), here = plantX(k), next = plantX(k + 2);
+  const out = Math.min(1, (next - here) / STRIDE); // size of the coming step, 0 once the walk is over
+  if (t < s + 2 * MID) { // stance: roll off the heel, stand flat, peel the heel up for the toe-off
+    const q = (t - s) / (2 * MID), r = clamp((q - 0.55) / 0.45, 0, 1);
+    const pitch = -GAIT.heel * Math.min(1, (here - plantX(k - 2)) / STRIDE) * (1 - smoothstep(0, 0.15, q)) + GAIT.toe * out * r * r;
+    return [...footRoll(here - xb, pitch), pitch];
+  }
+  const u = (t - s - 2 * MID) / (2 * STEP - 2 * MID); // swing: toe-off -> next heel strike
+  const p0 = GAIT.toe * out, p1 = -GAIT.heel * out;
+  const [z0, y0] = footRoll(here - xb, p0), [z1, y1] = footRoll(next - xb, p1);
+  return [lerp(z0, z1, smoothstep(0, 1, u)), lerp(y0, y1, u) + GAIT.lift * Math.sqrt(out) * Math.sin(Math.PI * u), lerp(p0, p1, smoothstep(0, 0.8, u))];
+}
+function solveLeg(leg, ax, ay, az, pitch) { // planar two-bone IK; ankle target in character space, pelvis unrotated
+  const p = char.pelvis.position, h = leg.hip.position;
+  const dx = ax - p.x - h.x, dy = ay - p.y - h.y, dz = az - p.z - h.z;
+  const roll = Math.atan2(dx, -dy), down = Math.hypot(dx, dy), d = Math.min(Math.hypot(down, dz), THIGH + SHIN);
+  const knee = Math.PI - Math.acos(clamp((THIGH * THIGH + SHIN * SHIN - d * d) / (2 * THIGH * SHIN), -1, 1));
+  const thigh = Math.atan2(dz, down) + Math.acos(clamp((THIGH * THIGH + d * d - SHIN * SHIN) / (2 * THIGH * d), -1, 1));
+  leg.hip.rotation.order = 'ZXY';
+  leg.hip.rotation.set(-thigh, 0, roll);
+  leg.knee.rotation.set(knee, 0, 0);
+  leg.ankle.rotation.set(pitch + thigh - knee, 0, -roll);
+}
+function walkCycle(t) { // shared by body, arms and head
+  const w = walkSpeed(t), ph = (t - S0) / STEP; // ph: steps since the last full footfall
+  return { w, ph, armR: GAIT.arm * w * Math.cos(Math.PI * (ph - 1.15)) }; // right arm swings forward with the left foot
+}
+function poseWalk(t) {
+  const { w, ph, armR } = walkCycle(t), xb = bodyX(t);
+  const hip = lerp(HIP_REST, GAIT.hip - GAIT.bob * Math.cos(2 * Math.PI * (ph - 0.1)), w); // lowest in double support
+  char.pelvis.position.set(GAIT.sway * w * Math.cos(Math.PI * (ph - 1 - GAIT.duty)), hip + 0.005, 0); // over the stance foot
+  char.spine.rotation.set(GAIT.lean * w, GAIT.twist * armR / GAIT.arm, 0);
+  for (const [leg, parity] of [[char.legR, 0], [char.legL, 1]]) {
+    const [z, y, pitch] = footAt(t, parity, xb);
+    solveLeg(leg, leg.hip.position.x, y, z, pitch);
+  }
+}
+
 function poseBody(t) {
-  // root: glide in (no steps), slide back after grabbing, snap-turn to camera
+  // root: walk in, slide back after grabbing, snap-turn to camera
   let x = CHAR_POS.x, yaw = 90 * DEG;
-  if (t < T.glideEnd) x = lerp(-3.4, CHAR_POS.x, prog(t, T.glideStart, T.glideEnd));
+  if (t < T.walkEnd) x = bodyX(t);
   if (t >= T.grab) x = lerp(CHAR_POS.x, BACK_X, prog(t, T.grab + 0.05, T.turn - 0.05));
   if (t >= T.turn) yaw = lerp(90 * DEG, FACE_YAW, prog(t, T.turn, T.turn + 3 / FPS));
   char.root.position.set(x, 0, CHAR_POS.z);
@@ -645,9 +778,10 @@ function poseBody(t) {
   lean = lerp(lean, 7 * DEG, kneel);
   let bob = 0;
   if (t >= T.party + 0.2) { const ph = ((t - T.party) * 3) % 1; bob = -0.006 * Math.exp(-ph * 5); }
-  char.pelvis.position.y = lerp(0.395, 0.235, kneel) + bob;
+  char.pelvis.position.set(0, lerp(0.395, 0.235, kneel) + bob, 0);
   char.spine.rotation.set(lean, 0, 0);
   setLegs(kneel);
+  if (t < WALK_DONE) poseWalk(t);
   char.head.rotation.set(0, 0, 0);
   char.root.updateMatrixWorld(true);
   return kneel;
@@ -665,6 +799,11 @@ function poseHead(t, kneel) {
     }
     const k = prog(t, T.headToCam, T.headToCam + SNAP) * (1 - prog(t, T.headBack, T.headBack + SNAP));
     hy = lerp(by, cy, k); hp = lerp(bp, cp, k);
+    if (t < WALK_DONE) { // keep facing ahead against the shoulder twist, wobble towards the stance foot
+      const { w, ph, armR } = walkCycle(t);
+      hy -= GAIT.twist * armR / GAIT.arm;
+      hr = -GAIT.tilt * w * Math.cos(Math.PI * (ph - 1 - GAIT.duty));
+    }
   } else {
     hy = cy; hp = cp;
     // recoil from the "explosion"
@@ -689,6 +828,11 @@ function poseArms(t, kneel) {
   let hR = REST_R.clone(), hL = REST_L.clone(), pR = POLE_BACK_R, pL = POLE_BACK_L;
   let dR = DIR_UP_R.clone(), dL = DIR_UP_L.clone();
   let lenR = 1, lenL = 1;
+  if (t < WALK_DONE) { // swing against the legs, ride along with the pelvis, a little elbow bend while walking
+    const { w, armR } = walkCycle(t), p = char.pelvis.position;
+    const up = p.y - 0.395 + 0.02 * w + 1.5 * armR * armR;
+    hR.add(V3(p.x, up, 0.018 * w + armR)); hL.add(V3(p.x, up, 0.018 * w - armR));
+  }
   if (t >= T.reach && t < T.turn) {
     hR = vlerp(REST_R, GRAB_R, prog(t, T.reach, T.grab)).lerp(HOLD1_R, prog(t, T.grab + 0.05, T.turn - 0.05));
     pR = POLE_OUT_R;
@@ -933,6 +1077,7 @@ function applyFill(level) {
   const lit = level * (0.15 + 0.85 * spotFactor(char.root.position.clone().setY(0.9)));
   for (const [mat, k] of FILL) mat.emissiveIntensity = k * lit;
   M.steel.envMapIntensity = 1.0 * level;
+  M.wrapBody.envMapIntensity = 0.3 * level;
 }
 
 function animate(t) {
@@ -955,7 +1100,7 @@ function animate(t) {
 window.renderAt = (t) => {
   const L = animate(t);
   if (L <= 0) { renderer.setRenderTarget(null); renderer.clear(); }
-  else renderer.render(scene, camera);
+  else renderer.render(scene, shotCamera(t));
   drawOverlay(t);
 };
 
@@ -964,6 +1109,7 @@ async function init() {
   const [faceTex, wrapTex] = await Promise.all([loadTex('../assets/face.jpg'), loadTex('../assets/bueno_wrapper.png')]);
   M.face.map = faceTex; M.face.emissiveMap = faceTex; M.face.needsUpdate = true;
   M.wrap.map = wrapTex; M.wrap.needsUpdate = true;
+  M.wrapBody.map = wrapTex; M.wrapBody.needsUpdate = true;
   await Promise.all([document.fonts.load('800 80px Rubik'), document.fonts.load('500 60px Rubik')]);
 
   // face the camera (a touch towards the cart) once the character has turned
@@ -1009,7 +1155,13 @@ async function init() {
   setupConfetti();
   for (let i = 0; i < CONF_N; i++) confetti.setColorAt(i, confData[i].color);
 
-  window.EVENTS = { ...T, halfLand: tearState.halves.map((h) => T.tear + h.b.landed / FPS) };
+  // audible footfalls: time, where the foot lands, step size relative to a full stride
+  const steps = [];
+  for (let k = Math.ceil((T.stepsHeard - S0) / STEP); fallT(k) < WALK_DONE; k++) {
+    const len = plantX(k) - plantX(k - 2);
+    if (len > 0.005) steps.push({ t: fallT(k), x: plantX(k), size: Math.min(1, len / STRIDE) });
+  }
+  window.EVENTS = { ...T, halfLand: tearState.halves.map((h) => T.tear + h.b.landed / FPS), steps };
   renderer.compile(scene, camera);
   window.renderAt(T.party + 1);
   window.renderAt(0);
